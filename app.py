@@ -12,18 +12,32 @@ PROBLEMS_DIR = "problems"
 os.makedirs(PROBLEMS_DIR, exist_ok=True)
 
 st.title("📝 수능/모의고사 맞춤형 시험지 생성기")
-st.caption("연도/월별 조건 필터링부터 정답 및 출처표 자동 첨부까지 지원합니다.")
+st.caption("연도/월/수능 조건 필터링부터 정답 및 출처표 자동 첨부까지 지원합니다.")
 
 def parse_file_info(filepath):
-    """파일명에서 연도, 월, 문제 번호를 추출 (예: 2026_06_q12.png)"""
+    """
+    파일명에서 연도, 월/시험 구분, 문제 번호를 추출
+    예시 1: 2026_06_q12.png -> 2026년 06월 12번
+    예시 2: 2026_suneung_q12.png, 2026_sat_q12.png, 2026_수능_q12.png -> 2026년 수능 12번
+    """
     filename = os.path.basename(filepath)
-    match = re.search(r'(\d{4})_([A-Za-z0-9]+)_q(\d{2})\.png$', filename)
+    # 한글, 영문, 숫자가 들어간 시험 구분을 모두 감지할 수 있도록 정규식 확장
+    match = re.search(r'(\d{4})_([A-Za-z0-9가-힣]+)_q(\d{2})\.png$', filename)
     if match:
         year = match.group(1)
         exam_type = match.group(2)
         q_num = int(match.group(3))
         
-        exam_str = f"{int(exam_type):02d}월" if exam_type.isdigit() else exam_type
+        # 1. 숫자일 경우 '06월' 형태로 변환
+        if exam_type.isdigit():
+            exam_str = f"{int(exam_type):02d}월"
+        # 2. 수능 관련 키워드일 경우 '수능'으로 통합
+        elif exam_type.lower() in ["sat", "csat", "suneung", "sunung", "수능"]:
+            exam_str = "수능"
+        # 3. 기타 예외 문자열은 그대로 사용
+        else:
+            exam_str = exam_type
+            
         source_str = f"{year}년 {exam_str} {q_num}번"
         
         return {
@@ -42,11 +56,11 @@ all_problems = [parse_file_info(f) for f in raw_files if parse_file_info(f) is n
 
 if not all_problems:
     st.error("⚠️ `problems/` 폴더에 조건에 맞는 문제 이미지(.png)가 없습니다.")
-    st.info("파일명이 `2026_06_q12.png` 형식으로 올바르게 저장되어 있는지 확인해 주세요.")
+    st.info("파일명이 `2026_06_q12.png` 또는 `2026_suneung_q12.png` 형식이어야 합니다.")
 else:
     st.success(f"📂 현재 **총 {len(all_problems)}개**의 문제를 보유 중입니다.")
 
-    st.subheader("1. 연도 및 월 필터 선택")
+    st.subheader("1. 연도 및 월/시험 필터 선택")
     
     # 1. 연도 필터링
     available_years = sorted(list(set(p["year"] for p in all_problems)))
@@ -58,12 +72,12 @@ else:
     else:
         year_filtered = all_problems
 
-    # 2. 월 필터링
+    # 2. 월 및 수능 필터링 (03월, 06월, 09월, 수능 등이 선택지로 생성됨)
     available_exams = sorted(list(set(p["exam"] for p in year_filtered)))
-    selected_exam = st.selectbox("월/시험 선택", ["전체 월"] + available_exams)
+    selected_exam = st.selectbox("월/시험 선택", ["전체 선택"] + available_exams)
 
-    # 월 필터 적용
-    if selected_exam != "전체 월":
+    # 월/시험 필터 적용
+    if selected_exam != "전체 선택":
         filtered_pool = [p for p in year_filtered if p["exam"] == selected_exam]
     else:
         filtered_pool = year_filtered
@@ -196,3 +210,4 @@ else:
             file_name="Custom_Math_Exam_With_Answers.pdf",
             mime="application/pdf"
         )
+    
