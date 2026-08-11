@@ -6,6 +6,7 @@ import re
 import random
 import io
 import csv
+import unicodedata
 
 st.set_page_config(page_title="맞춤형 시험지 생성기", page_icon="📝", layout="centered")
 
@@ -34,54 +35,75 @@ ANSWER_MAP = load_answers_csv(CSV_PATH)
 
 def parse_file_info(filepath):
     """
-    유연한 파일명 파싱 함수
+    한글 파일명 및 맥/윈도우 인코딩(NFC/NFD)을 완벽 지원하는 파싱 함수
     지원 예시:
-    - 2025_수능_q1.png / 2025_수능_q01.png / 2025_수능_1.png
-    - 2025_06_q12.png / 2025_suneung_q12_a4.png
+    - 2025_수능_01.png / 2025_수능_q1.png / 2025_수능_12.png
+    - 2026_06_q12.png / 2026_6월_12_a4.png
     """
     filename = os.path.basename(filepath)
+    # 맥OS 한글 자모음 분리 현상(NFD)을 윈도우/표준 완성형(NFC)으로 자동 변환
+    filename = unicodedata.normalize('NFC', filename)
     
-    # 정규식: 연도(4자리) _ 시험구분(한글/영문/숫자) _ [q생략가능]문제번호(1~2자리) _ [선택]정답(_a4) . 확장자
-    pattern = r'^(\d{4})_([A-Za-z0-9가-힣]+)_(?:[qQ])?(\d{1,2})(?:_[aA]([A-Za-z0-9가-힣]+))?\.(png|PNG|jpg|JPG|jpeg|JPEG)$'
-    match = re.search(pattern, filename)
-    
-    if match:
-        year = match.group(1)
-        raw_exam = match.group(2)
-        q_num = int(match.group(3))
-        raw_ans_filename = match.group(4)
-        
-        # 시험 구분 처리 (숫자 -> '06월', 수능키워드 -> '수능')
-        if raw_exam.isdigit():
-            exam_str = f"{int(raw_exam):02d}월"
-        elif any(k in raw_exam.lower() for k in ["수능", "suneung", "sat", "csat", "sunung"]):
-            exam_str = "수능"
-        else:
-            exam_str = raw_exam
-            
-        source_str = f"{year}년 {exam_str} {q_num}번"
-        
-        # 정답 추출 (1. 파일명 정답 -> 2. CSV 정답 -> 3. 빈칸)
-        code_key = f"{year}_{raw_exam}_q{q_num:02d}"
-        code_key_alt = f"{year}_{raw_exam}_q{q_num}"
-        raw_ans_csv = ANSWER_MAP.get(code_key, "") or ANSWER_MAP.get(code_key_alt, "")
-        
-        final_ans = raw_ans_filename or raw_ans_csv
-        circle_num = { "1": "①", "2": "②", "3": "③", "4": "④", "5": "⑤" }
-        ans_str = circle_num.get(final_ans, final_ans) if final_ans else "(   )"
+    name, ext = os.path.splitext(filename)
+    if ext.lower() not in ['.png', '.jpg', '.jpeg']:
+        return None
 
-        return {
-            "path": filepath,
-            "filename": filename,
-            "year": year,
-            "exam": exam_str,
-            "q_num": q_num,
-            "source_str": source_str,
-            "answer_str": ans_str
-        }
-    return None
+    # 언더바(_) 기준으로 파일명 분할
+    parts = name.split('_')
+    if len(parts) < 3:
+        return None
+        
+    year = parts[0].strip()
+    raw_exam = parts[1].strip()
+    raw_q = parts[2].strip()
 
-# 이미지 파일 로드 (.png, .jpg 등 대소문자 허용)
+    # 연도 4자리 검증
+    if not (len(year) == 4 and year.isdigit()):
+        return None
+
+    # 문제 번호 추출 (숫자만 추출: q12 -> 12, 01 -> 1)
+    q_match = re.search(r'\d+', raw_q)
+    if not q_match:
+        return None
+    q_num = int(q_match.group())
+
+    # 시험 구분 처리 ('수능' 관련 키워드 통합, 숫자 -> '06월')
+    if raw_exam.isdigit():
+        exam_str = f"{int(raw_exam):02d}월"
+    elif any(k in raw_exam.lower() for k in ["수능", "suneung", "sat", "csat", "sunung"]):
+        exam_str = "수능"
+    elif "월" in raw_exam:
+        m_digit = re.search(r'\d+', raw_exam)
+        exam_str = f"{int(m_digit.group()):02d}월" if m_digit else raw_exam
+    else:
+        exam_str = raw_exam
+
+    source_str = f"{year}년 {exam_str} {q_num}번"
+
+    # 정답 추출 (1. 파일명에 _a4 형식 표기 -> 2. CSV 파일 검색 -> 3. 빈칸)
+    raw_ans_filename = None
+    if len(parts) >= 4 and parts[3].lower().startswith('a'):
+        raw_ans_filename = parts[3][1:]
+
+    code_key = f"{year}_{raw_exam}_q{q_num:02d}"
+    code_key_alt = f"{year}_{raw_exam}_{q_num}"
+    raw_ans_csv = ANSWER_MAP.get(code_key, "") or ANSWER_MAP.get(code_key_alt, "")
+
+    final_ans = raw_ans_filename or raw_ans_csv
+    circle_num = { "1": "①", "2": "②", "3": "③", "4": "④", "5": "⑤" }
+    ans_str = circle_num.get(final_ans, final_ans) if final_ans else "(   )"
+
+    return {
+        "path": filepath,
+        "filename": filename,
+        "year": year,
+        "exam": exam_str,
+        "q_num": q_num,
+        "source_str": source_str,
+        "answer_str": ans_str
+    }
+
+# 이미지 파일 로드
 raw_files = []
 for ext in ["*.png", "*.PNG", "*.jpg", "*.JPG", "*.jpeg", "*.JPEG"]:
     raw_files.extend(glob.glob(os.path.join(PROBLEMS_DIR, ext)))
@@ -91,7 +113,7 @@ all_problems = [parse_file_info(f) for f in raw_files if parse_file_info(f) is n
 
 if not all_problems:
     st.error("⚠️ `problems/` 폴더에서 인식 가능한 문제 이미지를 찾지 못했습니다.")
-    st.info("💡 파일명 예시: `2025_수능_q01.png`, `2025_수능_12.png`, `2026_06_q12_a4.png`")
+    st.info("💡 파일명 형식 예시: `2025_수능_01.png`, `2025_수능_12.png`, `2026_06_q12.png`")
 else:
     st.success(f"📂 현재 **총 {len(all_problems)}개**의 문제를 성공적으로 읽어왔습니다.")
 
@@ -106,12 +128,11 @@ else:
     else:
         year_filtered = all_problems
 
-    # 2. 월/시험 필터링 ('수능' 항목 포함 정렬)
+    # 2. 월/시험 필터링 (월 정렬 후 '수능' 항목이 아래쪽에 오도록 순서 정돈)
     raw_exams = list(set(p["exam"] for p in year_filtered))
-    # 월(숫자) -> 수능 순서로 보기 쉽게 정렬
     available_exams = sorted(raw_exams, key=lambda x: (1 if x == "수능" else 0, x))
     
-    selected_exam = st.selectbox("월/시험 선택 (수능만 선택 가능)", ["전체 선택"] + available_exams)
+    selected_exam = st.selectbox("월/시험 선택", ["전체 선택"] + available_exams)
 
     if selected_exam != "전체 선택":
         filtered_pool = [p for p in year_filtered if p["exam"] == selected_exam]
@@ -240,3 +261,4 @@ else:
             file_name="Custom_Math_Exam_With_Answers.pdf",
             mime="application/pdf"
         )
+        
