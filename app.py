@@ -5,60 +5,95 @@ import os
 import re
 import random
 import io
+import csv
 
 st.set_page_config(page_title="맞춤형 시험지 생성기", page_icon="📝", layout="centered")
 
 PROBLEMS_DIR = "problems"
+CSV_PATH = "answers.csv"
 os.makedirs(PROBLEMS_DIR, exist_ok=True)
 
 st.title("📝 수능/모의고사 맞춤형 시험지 생성기")
 st.caption("연도/월/수능 조건 필터링부터 정답 및 출처표 자동 첨부까지 지원합니다.")
 
+# 1. answers.csv 정답 파일 로드 (있을 경우 사용)
+def load_answers_csv(csv_path):
+    answer_dict = {}
+    if os.path.exists(csv_path):
+        try:
+            with open(csv_path, mode='r', encoding='utf-8-sig') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if 'code' in row and 'answer' in row:
+                        answer_dict[row['code'].strip()] = row['answer'].strip()
+        except Exception as e:
+            st.warning(f"CSV 정답 파일을 읽는 중 오류가 발생했습니다: {e}")
+    return answer_dict
+
+ANSWER_MAP = load_answers_csv(CSV_PATH)
+
 def parse_file_info(filepath):
     """
-    파일명에서 연도, 월/시험 구분, 문제 번호를 추출
-    예시 1: 2026_06_q12.png -> 2026년 06월 12번
-    예시 2: 2026_suneung_q12.png, 2026_sat_q12.png, 2026_수능_q12.png -> 2026년 수능 12번
+    유연한 파일명 파싱 함수
+    지원 예시:
+    - 2025_수능_q1.png / 2025_수능_q01.png / 2025_수능_1.png
+    - 2025_06_q12.png / 2025_suneung_q12_a4.png
     """
     filename = os.path.basename(filepath)
-    # 한글, 영문, 숫자가 들어간 시험 구분을 모두 감지할 수 있도록 정규식 확장
-    match = re.search(r'(\d{4})_([A-Za-z0-9가-힣]+)_q(\d{2})\.png$', filename)
+    
+    # 정규식: 연도(4자리) _ 시험구분(한글/영문/숫자) _ [q생략가능]문제번호(1~2자리) _ [선택]정답(_a4) . 확장자
+    pattern = r'^(\d{4})_([A-Za-z0-9가-힣]+)_(?:[qQ])?(\d{1,2})(?:_[aA]([A-Za-z0-9가-힣]+))?\.(png|PNG|jpg|JPG|jpeg|JPEG)$'
+    match = re.search(pattern, filename)
+    
     if match:
         year = match.group(1)
-        exam_type = match.group(2)
+        raw_exam = match.group(2)
         q_num = int(match.group(3))
+        raw_ans_filename = match.group(4)
         
-        # 1. 숫자일 경우 '06월' 형태로 변환
-        if exam_type.isdigit():
-            exam_str = f"{int(exam_type):02d}월"
-        # 2. 수능 관련 키워드일 경우 '수능'으로 통합
-        elif exam_type.lower() in ["sat", "csat", "suneung", "sunung", "수능"]:
+        # 시험 구분 처리 (숫자 -> '06월', 수능키워드 -> '수능')
+        if raw_exam.isdigit():
+            exam_str = f"{int(raw_exam):02d}월"
+        elif any(k in raw_exam.lower() for k in ["수능", "suneung", "sat", "csat", "sunung"]):
             exam_str = "수능"
-        # 3. 기타 예외 문자열은 그대로 사용
         else:
-            exam_str = exam_type
+            exam_str = raw_exam
             
         source_str = f"{year}년 {exam_str} {q_num}번"
         
+        # 정답 추출 (1. 파일명 정답 -> 2. CSV 정답 -> 3. 빈칸)
+        code_key = f"{year}_{raw_exam}_q{q_num:02d}"
+        code_key_alt = f"{year}_{raw_exam}_q{q_num}"
+        raw_ans_csv = ANSWER_MAP.get(code_key, "") or ANSWER_MAP.get(code_key_alt, "")
+        
+        final_ans = raw_ans_filename or raw_ans_csv
+        circle_num = { "1": "①", "2": "②", "3": "③", "4": "④", "5": "⑤" }
+        ans_str = circle_num.get(final_ans, final_ans) if final_ans else "(   )"
+
         return {
             "path": filepath,
             "filename": filename,
             "year": year,
             "exam": exam_str,
             "q_num": q_num,
-            "source_str": source_str
+            "source_str": source_str,
+            "answer_str": ans_str
         }
     return None
 
-# 모든 문제 로드 및 정보 파싱
-raw_files = sorted(glob.glob(os.path.join(PROBLEMS_DIR, "*.png")))
+# 이미지 파일 로드 (.png, .jpg 등 대소문자 허용)
+raw_files = []
+for ext in ["*.png", "*.PNG", "*.jpg", "*.JPG", "*.jpeg", "*.JPEG"]:
+    raw_files.extend(glob.glob(os.path.join(PROBLEMS_DIR, ext)))
+raw_files = sorted(list(set(raw_files)))
+
 all_problems = [parse_file_info(f) for f in raw_files if parse_file_info(f) is not None]
 
 if not all_problems:
-    st.error("⚠️ `problems/` 폴더에 조건에 맞는 문제 이미지(.png)가 없습니다.")
-    st.info("파일명이 `2026_06_q12.png` 또는 `2026_suneung_q12.png` 형식이어야 합니다.")
+    st.error("⚠️ `problems/` 폴더에서 인식 가능한 문제 이미지를 찾지 못했습니다.")
+    st.info("💡 파일명 예시: `2025_수능_q01.png`, `2025_수능_12.png`, `2026_06_q12_a4.png`")
 else:
-    st.success(f"📂 현재 **총 {len(all_problems)}개**의 문제를 보유 중입니다.")
+    st.success(f"📂 현재 **총 {len(all_problems)}개**의 문제를 성공적으로 읽어왔습니다.")
 
     st.subheader("1. 연도 및 월/시험 필터 선택")
     
@@ -66,17 +101,18 @@ else:
     available_years = sorted(list(set(p["year"] for p in all_problems)))
     selected_year = st.selectbox("연도 선택", ["전체 연도"] + available_years)
 
-    # 연도 필터 적용
     if selected_year != "전체 연도":
         year_filtered = [p for p in all_problems if p["year"] == selected_year]
     else:
         year_filtered = all_problems
 
-    # 2. 월 및 수능 필터링 (03월, 06월, 09월, 수능 등이 선택지로 생성됨)
-    available_exams = sorted(list(set(p["exam"] for p in year_filtered)))
-    selected_exam = st.selectbox("월/시험 선택", ["전체 선택"] + available_exams)
+    # 2. 월/시험 필터링 ('수능' 항목 포함 정렬)
+    raw_exams = list(set(p["exam"] for p in year_filtered))
+    # 월(숫자) -> 수능 순서로 보기 쉽게 정렬
+    available_exams = sorted(raw_exams, key=lambda x: (1 if x == "수능" else 0, x))
+    
+    selected_exam = st.selectbox("월/시험 선택 (수능만 선택 가능)", ["전체 선택"] + available_exams)
 
-    # 월/시험 필터 적용
     if selected_exam != "전체 선택":
         filtered_pool = [p for p in year_filtered if p["exam"] == selected_exam]
     else:
@@ -135,30 +171,25 @@ else:
             page.insert_text(fitz.Point(a4_w/2 - 75, 40), "수학 영역 맞춤 모의고사", fontsize=14, fontname="helv")
             page.draw_line(fitz.Point(margin, 52), fitz.Point(a4_w - margin, 52), width=1.2)
 
-            # 왼쪽 문제 (1번)
+            # 왼쪽 문제
             p1 = problems[i]
             pix1 = fitz.Pixmap(p1["path"])
-            aspect1 = pix1.height / pix1.width
-            target_h1 = min(col_w * aspect1, max_h)
+            target_h1 = min(col_w * (pix1.height / pix1.width), max_h)
 
-            # 상단 문항 번호 + 출처 표기
             label_text1 = f"Question {i+1}   [{p1['source_str']}]"
             page.insert_text(fitz.Point(margin, 70), label_text1, fontsize=9.5, fontname="helv")
-            
             rect1 = fitz.Rect(margin, 78, margin + col_w, 78 + target_h1)
             page.insert_image(rect1, filename=p1["path"])
 
-            # 오른쪽 문제 (2번)
+            # 오른쪽 문제
             if i + 1 < len(problems):
                 p2 = problems[i+1]
                 pix2 = fitz.Pixmap(p2["path"])
-                aspect2 = pix2.height / pix2.width
-                target_h2 = min(col_w * aspect2, max_h)
+                target_h2 = min(col_w * (pix2.height / pix2.width), max_h)
 
                 right_x = margin + col_w + 20
                 label_text2 = f"Question {i+2}   [{p2['source_str']}]"
                 page.insert_text(fitz.Point(right_x, 70), label_text2, fontsize=9.5, fontname="helv")
-                
                 rect2 = fitz.Rect(right_x, 78, right_x + col_w, 78 + target_h2)
                 page.insert_image(rect2, filename=p2["path"])
 
@@ -176,7 +207,7 @@ else:
         # 표 헤더
         ans_page.insert_text(fitz.Point(margin + 10, start_y), "시험지 번호", fontsize=10, fontname="helv")
         ans_page.insert_text(fitz.Point(margin + 120, start_y), "원문항 출처", fontsize=10, fontname="helv")
-        ans_page.insert_text(fitz.Point(margin + 320, start_y), "정답 확인 / 비고", fontsize=10, fontname="helv")
+        ans_page.insert_text(fitz.Point(margin + 320, start_y), "정답", fontsize=10, fontname="helv")
         ans_page.draw_line(fitz.Point(margin, start_y + 8), fitz.Point(a4_w - margin, start_y + 8), width=0.8)
 
         # 표 내용 채우기
@@ -184,12 +215,11 @@ else:
         for idx, p in enumerate(problems, 1):
             ans_page.insert_text(fitz.Point(margin + 20, current_y), f"문항 {idx:02d}", fontsize=9.5, fontname="helv")
             ans_page.insert_text(fitz.Point(margin + 120, current_y), p["source_str"], fontsize=9.5, fontname="helv")
-            ans_page.insert_text(fitz.Point(margin + 320, current_y), "(   )", fontsize=9.5, fontname="helv")
+            ans_page.insert_text(fitz.Point(margin + 320, current_y), p["answer_str"], fontsize=9.5, fontname="helv")
             
             ans_page.draw_line(fitz.Point(margin, current_y + 6), fitz.Point(a4_w - margin, current_y + 6), color=(0.9, 0.9, 0.9), width=0.5)
             current_y += row_height
 
-            # 페이지를 넘어가면 새 페이지 생성
             if current_y > a4_h - 50 and idx < len(problems):
                 ans_page = doc.new_page(width=a4_w, height=a4_h)
                 current_y = 60
@@ -205,7 +235,7 @@ else:
         st.write(f"총 **{len(selected_problems)}개**의 문제가 선택되었습니다.")
         pdf_data = create_exam_and_answer_pdf(selected_problems)
         st.download_button(
-            label="📄 시험지 및 답지(출처표) PDF 다운로드",
+            label="📄 시험지 및 답지(정답/출처표) PDF 다운로드",
             data=pdf_data,
             file_name="Custom_Math_Exam_With_Answers.pdf",
             mime="application/pdf"
